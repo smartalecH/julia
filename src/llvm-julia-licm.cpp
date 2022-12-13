@@ -149,6 +149,8 @@ struct JuliaLICM : public JuliaPassContext {
         BasicBlock *preheader = L->getLoopPreheader();
         if (!preheader)
             return false;
+        if (preheader->getParent()->hasOptNone())
+            return false;
         BasicBlock *header = L->getHeader();
         const llvm::DataLayout &DL = header->getModule()->getDataLayout();
         initFunctions(*header->getModule());

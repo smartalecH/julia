@@ -1175,6 +1175,8 @@ bool AllocOpt::doInitialization(Module &M)
 
 bool AllocOpt::runOnFunction(Function &F, function_ref<DominatorTree&()> GetDT)
 {
+    if (F.hasOptNone())
+        return false;
     if (!alloc_obj_func)
         return false;
     Optimizer optimizer(F, *this, std::move(GetDT));

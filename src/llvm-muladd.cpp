@@ -61,6 +61,8 @@ static bool checkCombine(Value *maybeMul) JL_NOTSAFEPOINT
 
 static bool combineMulAdd(Function &F) JL_NOTSAFEPOINT
 {
+    if (F.hasOptNone())
+        return false;
     bool modified = false;
     for (auto &BB: F) {
         for (auto it = BB.begin(); it != BB.end();) {
