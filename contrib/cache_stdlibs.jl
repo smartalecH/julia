@@ -13,6 +13,7 @@ stdlibs = [
     :Zlib_jll,
     :dSFMT_jll,
     :libLLVM_jll,
+    :DelimitedFiles,
 
     # 2-depth packages
     :LibSSH2_jll,
