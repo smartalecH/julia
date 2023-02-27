@@ -8654,6 +8654,55 @@ static JuliaVariable *julia_const_gv(jl_value_t *val)
     }
     return nullptr;
 }
+//Float16 fun
+static void makeCastCall(Module &M, StringRef wrapperName, StringRef calledName, FunctionType *FTwrapper, FunctionType *FTcalled)
+{
+    Function *calledFun = M.getFunction(calledName);
+    if (!calledFun) {
+        calledFun = Function::Create(FTcalled, Function::ExternalLinkage, calledName, M);
+    }
+    auto wrapperFun = Function::Create(FTwrapper, Function::ExternalLinkage, wrapperName, M);
+
+    llvm::IRBuilder<> builder(BasicBlock::Create(M.getContext(), "top", wrapperFun));
+    SmallVector<Value *, 4> CallArgs;
+    if (wrapperFun->arg_size() != calledFun->arg_size()){
+        llvm::errs() << "FATAL ERROR: Can't match wrapper to called function";
+        abort();
+    }
+    for (auto wrapperArg = wrapperFun->arg_begin(), calledArg = calledFun->arg_begin();
+            wrapperArg != wrapperFun->arg_end() && calledArg != calledFun->arg_end(); ++wrapperArg, ++calledArg)
+    {
+        CallArgs.push_back(builder.CreateBitCast(wrapperArg, calledArg->getType()));
+    }
+    auto val = builder.CreateCall(calledFun, CallArgs);
+    auto retval = builder.CreateBitCast(val,wrapperFun->getReturnType());
+    builder.CreateRet(retval);
+}
+
+static void emitFloat16Wrappers(Module &M)
+{
+    auto &ctx = M.getContext();
+    makeCastCall(M, "__gnu_h2f_ieee", "julia__gnu_h2f_ieee", FunctionType::get(Type::getFloatTy(ctx), { Type::getHalfTy(ctx) }, false),
+                FunctionType::get(Type::getFloatTy(ctx), { Type::getInt16Ty(ctx) }, false));
+    makeCastCall(M, "__extendhfsf2", "julia__gnu_h2f_ieee", FunctionType::get(Type::getFloatTy(ctx), { Type::getHalfTy(ctx) }, false),
+                FunctionType::get(Type::getFloatTy(ctx), { Type::getInt16Ty(ctx) }, false));
+    makeCastCall(M, "__gnu_f2h_ieee", "julia__gnu_f2h_ieee", FunctionType::get(Type::getHalfTy(ctx), { Type::getFloatTy(ctx) }, false),
+                FunctionType::get(Type::getInt16Ty(ctx), { Type::getFloatTy(ctx) }, false));
+    makeCastCall(M, "__truncsfhf2", "julia__gnu_f2h_ieee", FunctionType::get(Type::getHalfTy(ctx), { Type::getFloatTy(ctx) }, false),
+                FunctionType::get(Type::getInt16Ty(ctx), { Type::getFloatTy(ctx) }, false));
+    makeCastCall(M, "__truncdfhf2", "julia__truncdfhf2", FunctionType::get(Type::getHalfTy(ctx), { Type::getDoubleTy(ctx) }, false),
+                FunctionType::get(Type::getInt16Ty(ctx), { Type::getDoubleTy(ctx) }, false));
+
+}
+
+static void init_f16_funcs(void)
+{
+    auto ctx = jl_ExecutionEngine->acquireContext();
+    auto TSM =  jl_create_ts_module("F16Wrappers", ctx, imaging_default());
+    auto aliasM = TSM.getModuleUnlocked();
+    emitFloat16Wrappers(*aliasM);
+    jl_ExecutionEngine->addModule(std::move(TSM));
+}
 
 static void init_jit_functions(void)
 {
@@ -8882,6 +8931,7 @@ extern "C" JL_DLLEXPORT void jl_init_codegen_impl(void)
     jl_init_llvm();
     // Now that the execution engine exists, initialize all modules
     init_jit_functions();
+    init_f16_funcs();
 }
 
 extern "C" JL_DLLEXPORT void jl_teardown_codegen_impl() JL_NOTSAFEPOINT

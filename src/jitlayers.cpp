@@ -1404,6 +1404,51 @@ void JuliaOJIT::addModule(orc::ThreadSafeModule TSM)
     }
 }
 
+// void JuliaOJIT::addModuleToJD(orc::ThreadSafeModule TSM, orc::JITDylib &JD)
+// {
+//     JL_TIMING(LLVM_MODULE_FINISH);
+//     ++ModulesAdded;
+//     orc::SymbolLookupSet NewExports;
+//     TSM.withModuleDo([&](Module &M) JL_NOTSAFEPOINT {
+//         jl_decorate_module(M);
+//         shareStrings(M);
+//         for (auto &F : M.global_values()) {
+//             if (!F.isDeclaration() && F.getLinkage() == GlobalValue::ExternalLinkage) {
+//                 auto Name = ES.intern(getMangledName(F.getName()));
+//                 NewExports.add(std::move(Name));
+//             }
+//         }
+// #if !defined(JL_NDEBUG) && !defined(JL_USE_JITLINK)
+//         // validate the relocations for M (not implemented for the JITLink memory manager yet)
+//         for (Module::global_object_iterator I = M.global_objects().begin(), E = M.global_objects().end(); I != E; ) {
+//             GlobalObject *F = &*I;
+//             ++I;
+//             if (F->isDeclaration()) {
+//                 if (F->use_empty())
+//                     F->eraseFromParent();
+//                 else if (!((isa<Function>(F) && isIntrinsicFunction(cast<Function>(F))) ||
+//                         findUnmangledSymbol(F->getName()) ||
+//                         SectionMemoryManager::getSymbolAddressInProcess(
+//                             getMangledName(F->getName())))) {
+//                     llvm::errs() << "FATAL ERROR: "
+//                                 << "Symbol \"" << F->getName().str() << "\""
+//                                 << "not found";
+//                     abort();
+//                 }
+//             }
+//         }
+// #endif
+//     });
+
+//     // TODO: what is the performance characteristics of this?
+//     cantFail(OptSelLayer.add(JD, std::move(TSM)));
+//     // force eager compilation (for now), due to memory management specifics
+//     // (can't handle compilation recursion)
+//     for (auto &sym : cantFail(ES.lookup({{&JD, orc::JITDylibLookupFlags::MatchExportedSymbolsOnly}}, NewExports))) {
+//         assert(sym.second);
+//         (void) sym;
+//     }
+// }
 JL_JITSymbol JuliaOJIT::findSymbol(StringRef Name, bool ExportedSymbolsOnly)
 {
     orc::JITDylib* SearchOrders[2] = {&GlobalJD, &JD};
