@@ -621,7 +621,9 @@ type is `ismutabletype`, but also `ismutationfree`.
 """
 function ismutationfree(@nospecialize(t))
     t = unwrap_unionall(t)
-    if isa(t, DataType)
+    if t <: Array # TODO fix https://github.com/JuliaLang/julia/issues/48856 and remove this hack
+        return false
+    elseif isa(t, DataType)
         return datatype_ismutationfree(t)
     elseif isa(t, Union)
         return ismutationfree(t.a) && ismutationfree(t.b)
