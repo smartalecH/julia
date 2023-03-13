@@ -507,7 +507,7 @@ static void reportWriterError(const ErrorInfoBase &E)
     std::string err = E.message();
     jl_safe_printf("ERROR: failed to emit output file %s\n", err.c_str());
 }
-#if JL_LLVM_VERSION < 150000
+
 static void injectCRTAlias(Module &M, StringRef name, StringRef alias, FunctionType *FT)
 {
     Function *target = M.getFunction(alias);
@@ -524,7 +524,7 @@ static void injectCRTAlias(Module &M, StringRef name, StringRef alias, FunctionT
     auto val = builder.CreateCall(target, CallArgs);
     builder.CreateRet(val);
 }
-#endif
+
 
 // takes the running content that has collected in the shadow module and dump it to disk
 // this builds the object file portion of the sysimage files for fast startup
@@ -653,7 +653,6 @@ void jl_dump_native_impl(void *native_code,
         }
 
         if (inject_crt) {
-#if JL_LLVM_VERSION <= 140000
             // We would like to emit an alias or an weakref alias to redirect these symbols
             // but LLVM doesn't let us emit a GlobalAlias to a declaration...
             // So for now we inject a definition of these functions that calls our runtime
@@ -668,7 +667,6 @@ void jl_dump_native_impl(void *native_code,
                     FunctionType::get(Type::getHalfTy(Context), { Type::getFloatTy(Context) }, false));
             injectCRTAlias(M, "__truncdfhf2", "julia__truncdfhf2",
                     FunctionType::get(Type::getHalfTy(Context), { Type::getDoubleTy(Context) }, false));
-#endif
 #if defined(_OS_WINDOWS_)
             // Windows expect that the function `_DllMainStartup` is present in an dll.
             // Normal compilers use something like Zig's crtdll.c instead we provide a
