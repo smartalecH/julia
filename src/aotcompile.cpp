@@ -997,8 +997,9 @@ static void add_output_impl(Module &M, TargetMachine &SourceTM, std::string *out
         }
     }
     // no need to inject aliases if we have no functions
-#if JL_LLVM_VERSION<=14000
+
     if (inject_aliases) {
+#if JL_LLVM_VERSION<=14000
         // We would like to emit an alias or an weakref alias to redirect these symbols
         // but LLVM doesn't let us emit a GlobalAlias to a declaration...
         // So for now we inject a definition of these functions that calls our runtime
@@ -1013,8 +1014,8 @@ static void add_output_impl(Module &M, TargetMachine &SourceTM, std::string *out
                 FunctionType::get(Type::getHalfTy(M.getContext()), { Type::getFloatTy(M.getContext()) }, false));
         injectCRTAlias(M, "__truncdfhf2", "julia__truncdfhf2",
                 FunctionType::get(Type::getHalfTy(M.getContext()), { Type::getDoubleTy(M.getContext()) }, false));
-    }
 #endif
+    }
     timers.optimize.stopTimer();
 
     if (opt) {
