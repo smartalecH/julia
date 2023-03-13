@@ -414,13 +414,13 @@ JL_DLLEXPORT jl_code_instance_t *jl_new_codeinst(
     if ((const_flags & 2) == 0)
         inferred_const = NULL;
     codeinst->rettype_const = inferred_const;
-    jl_atomic_store_relaxed(&codeinst->invoke, NULL);
     jl_atomic_store_relaxed(&codeinst->specptr.fptr, NULL);
+    jl_atomic_store_relaxed(&codeinst->invoke, NULL);
     if ((const_flags & 1) != 0) {
         assert(const_flags & 2);
         jl_atomic_store_relaxed(&codeinst->invoke, jl_fptr_const_return);
     }
-    codeinst->isspecsig = 0;
+    jl_atomic_store_relaxed(&codeinst->specsigflags, 0);
     jl_atomic_store_relaxed(&codeinst->precompile, 0);
     jl_atomic_store_relaxed(&codeinst->next, NULL);
     codeinst->ipo_purity_bits = ipo_effects;
@@ -642,8 +642,7 @@ static jl_value_t *inst_varargp_in_env(jl_value_t *decl, jl_svec_t *sparams)
                 int T_has_tv = T && jl_has_typevar(T, v);
                 int N_has_tv = N && jl_has_typevar(N, v); // n.b. JL_VARARG_UNBOUND check means this should be false
                 assert(!N_has_tv || N == (jl_value_t*)v);
-                if (T_has_tv)
-                    vm = jl_type_unionall(v, T);
+                vm = T_has_tv ? jl_type_unionall(v, T) : T;
                 if (N_has_tv)
                     N = NULL;
                 vm = (jl_value_t*)jl_wrap_vararg(vm, N); // this cannot throw for these inputs
@@ -1195,6 +1194,8 @@ static jl_method_instance_t *cache_method(
     }
     // TODO: maybe assert(jl_isa_compileable_sig(compilationsig, sparams, definition));
     newmeth = jl_specializations_get_linfo(definition, (jl_value_t*)compilationsig, sparams);
+    if (newmeth->cache_with_orig)
+        cache_with_orig = 1;
 
     jl_tupletype_t *cachett = tt;
     jl_svec_t* guardsigs = jl_emptysvec;
@@ -1260,6 +1261,10 @@ static jl_method_instance_t *cache_method(
             min_valid = min_valid2;
             max_valid = max_valid2;
             cachett = compilationsig;
+        }
+        else {
+            // do not revisit this decision
+            newmeth->cache_with_orig = 1;
         }
     }
 
@@ -1605,31 +1610,32 @@ JL_DLLEXPORT void jl_method_instance_add_backedge(jl_method_instance_t *callee, 
     JL_LOCK(&callee->def.method->writelock);
     if (invokesig == jl_nothing)
         invokesig = NULL;      // julia uses `nothing` but C uses NULL (#undef)
+    int found = 0;
+    // TODO: use jl_cache_type_(invokesig) like cache_method does to save memory
     if (!callee->backedges) {
         // lazy-init the backedges array
         callee->backedges = jl_alloc_vec_any(0);
         jl_gc_wb(callee, callee->backedges);
-        push_edge(callee->backedges, invokesig, caller);
     }
     else {
         size_t i = 0, l = jl_array_len(callee->backedges);
-        int found = 0;
-        jl_value_t *invokeTypes;
-        jl_method_instance_t *mi;
-        while (i < l) {
-            i = get_next_edge(callee->backedges, i, &invokeTypes, &mi);
-            // TODO: it would be better to canonicalize (how?) the Tuple-type so
-            // that we don't have to call `jl_egal`
-            if (mi == caller && ((invokesig == NULL && invokeTypes == NULL) ||
-                                 (invokesig && invokeTypes && jl_egal(invokesig, invokeTypes)))) {
+        for (i = 0; i < l; i++) {
+            // optimized version of while (i < l) i = get_next_edge(callee->backedges, i, &invokeTypes, &mi);
+            jl_value_t *mi = jl_array_ptr_ref(callee->backedges, i);
+            if (mi != (jl_value_t*)caller)
+                continue;
+            jl_value_t *invokeTypes = i > 0 ? jl_array_ptr_ref(callee->backedges, i - 1) : NULL;
+            if (invokeTypes && jl_is_method_instance(invokeTypes))
+                invokeTypes = NULL;
+            if ((invokesig == NULL && invokeTypes == NULL) ||
+                (invokesig && invokeTypes && jl_types_equal(invokesig, invokeTypes))) {
                 found = 1;
                 break;
             }
         }
-        if (!found) {
-            push_edge(callee->backedges, invokesig, caller);
-        }
     }
+    if (!found)
+        push_edge(callee->backedges, invokesig, caller);
     JL_UNLOCK(&callee->def.method->writelock);
 }
 
@@ -1645,6 +1651,7 @@ JL_DLLEXPORT void jl_method_table_add_backedge(jl_methtable_t *mt, jl_value_t *t
         jl_array_ptr_set(mt->backedges, 1, caller);
     }
     else {
+        // TODO: use jl_cache_type_(tt) like cache_method does, instead of a linear scan
         size_t i, l = jl_array_len(mt->backedges);
         for (i = 1; i < l; i += 2) {
             if (jl_types_equal(jl_array_ptr_ref(mt->backedges, i - 1), typ)) {
@@ -1811,6 +1818,36 @@ static int jl_type_intersection2(jl_value_t *t1, jl_value_t *t2, jl_value_t **is
     return 1;
 }
 
+enum morespec_options {
+    morespec_unknown,
+    morespec_isnot,
+    morespec_is
+};
+
+// check if `type` is replacing `m` with an ambiguity here, given other methods in `d` that already match it
+// precondition: type is not more specific than `m`
+static int is_replacing(jl_value_t *type, jl_method_t *m, jl_method_t *const *d, size_t n, jl_value_t *isect, jl_value_t *isect2, char *morespec)
+{
+    size_t k;
+    for (k = 0; k < n; k++) {
+        jl_method_t *m2 = d[k];
+        // see if m2 also fully covered this intersection
+        if (m == m2 || !(jl_subtype(isect, m2->sig) || (isect2 && jl_subtype(isect2, m2->sig))))
+            continue;
+        if (morespec[k] == (char)morespec_unknown)
+            morespec[k] = (char)(jl_type_morespecific(m2->sig, type) ? morespec_is : morespec_isnot);
+        if (morespec[k] == (char)morespec_is)
+            // not actually shadowing this--m2 will still be better
+            return 0;
+        // since m2 was also a previous match over isect,
+        // see if m was also previously dominant over all m2
+        if (!jl_type_morespecific(m->sig, m2->sig))
+            // m and m2 were previously ambiguous over the full intersection of mi with type, and will still be ambiguous with type
+            return 0;
+    }
+    return 1;
+}
+
 JL_DLLEXPORT void jl_method_table_insert(jl_methtable_t *mt, jl_method_t *method, jl_tupletype_t *simpletype)
 {
     JL_TIMING(ADD_METHOD);
@@ -1845,7 +1882,7 @@ JL_DLLEXPORT void jl_method_table_insert(jl_methtable_t *mt, jl_method_t *method
         oldvalue = get_intersect_matches(jl_atomic_load_relaxed(&mt->defs), newentry);
 
         int invalidated = 0;
-        jl_method_t **d;
+        jl_method_t *const *d;
         size_t j, n;
         if (oldvalue == NULL) {
             d = NULL;
@@ -1874,6 +1911,7 @@ JL_DLLEXPORT void jl_method_table_insert(jl_methtable_t *mt, jl_method_t *method
                     //    -> less specific or ambiguous with any one of them: can ignore the missing edge (not missing)
                     //      -> some may have been ambiguous: still are
                     //      -> some may have been called: they may be partly replaced (will be detected in the loop later)
+                    // c.f. `is_replacing`, which is a similar query, but with an existing method match to compare against
                     missing = 1;
                     size_t j;
                     for (j = 0; j < n; j++) {
@@ -1908,11 +1946,6 @@ JL_DLLEXPORT void jl_method_table_insert(jl_methtable_t *mt, jl_method_t *method
         }
         if (oldvalue) {
             oldmi = jl_alloc_vec_any(0);
-            enum morespec_options {
-                morespec_unknown,
-                morespec_isnot,
-                morespec_is
-            };
             char *morespec = (char*)alloca(n);
             memset(morespec, morespec_unknown, n);
             for (j = 0; j < n; j++) {
@@ -1929,6 +1962,11 @@ JL_DLLEXPORT void jl_method_table_insert(jl_methtable_t *mt, jl_method_t *method
                         continue;
                     isect3 = jl_type_intersection(m->sig, (jl_value_t*)mi->specTypes);
                     if (jl_type_intersection2(type, isect3, &isect, &isect2)) {
+                        // TODO: this only checks pair-wise for ambiguities, but the ambiguities could arise from the interaction of multiple methods
+                        // and thus might miss a case where we introduce an ambiguity between two existing methods
+                        // We could instead work to sort this into 3 groups `morespecific .. ambiguous .. lesspecific`, with `type` in ambiguous,
+                        // such that everything in `morespecific` dominates everything in `ambiguous`, and everything in `ambiguous` dominates everything in `lessspecific`
+                        // And then compute where each isect falls, and whether it changed group--necessitating invalidation--or not.
                         if (morespec[j] == (char)morespec_unknown)
                             morespec[j] = (char)(jl_type_morespecific(m->sig, type) ? morespec_is : morespec_isnot);
                         if (morespec[j] == (char)morespec_is)
@@ -1937,62 +1975,38 @@ JL_DLLEXPORT void jl_method_table_insert(jl_methtable_t *mt, jl_method_t *method
                         if (ambig == morespec_unknown)
                             ambig = jl_type_morespecific(type, m->sig) ? morespec_is : morespec_isnot;
                         // replacing a method--see if this really was the selected method previously
-                        // over the intersection
-                        if (ambig == morespec_isnot)  {
-                            size_t k;
-                            for (k = 0; k < n; k++) {
-                                jl_method_t *m2 = d[k];
-                                if (m == m2 || !(jl_subtype(isect, m2->sig) || (isect && jl_subtype(isect, m2->sig))))
-                                    continue;
-                                if (morespec[k] == (char)morespec_unknown)
-                                    morespec[k] = (char)(jl_type_morespecific(m2->sig, type) ? morespec_is : morespec_isnot);
-                                if (morespec[k] == (char)morespec_is)
-                                    // not actually shadowing this--m2 will still be better
-                                    break;
-                                // since m2 was also a previous match over isect,
-                                // see if m was also previously dominant over all m2
-                                if (!jl_type_morespecific(m->sig, m2->sig))
-                                    break;
-                            }
-                            if (k != n)
-                                continue;
-                        }
-                        // Before deciding whether to invalidate `mi`, check each backedge for `invoke`s
-                        if (mi->backedges) {
-                            jl_array_t *backedges = mi->backedges;
+                        // over the intersection (not ambiguous) and the new method will be selected now (morespec_is)
+                        int replaced_dispatch = ambig == morespec_is || is_replacing(type, m, d, n, isect, isect2, morespec);
+                        // found that this specialization dispatch got replaced by m
+                        // call invalidate_backedges(&do_nothing_with_codeinst, mi, max_world, "jl_method_table_insert");
+                        // but ignore invoke-type edges
+                        jl_array_t *backedges = mi->backedges;
+                        if (backedges) {
                             size_t ib = 0, insb = 0, nb = jl_array_len(backedges);
                             jl_value_t *invokeTypes;
                             jl_method_instance_t *caller;
                             while (ib < nb) {
                                 ib = get_next_edge(backedges, ib, &invokeTypes, &caller);
-                                if (!invokeTypes) {
-                                    // ordinary dispatch, invalidate
+                                int replaced_edge;
+                                if (invokeTypes) {
+                                    // n.b. normally we must have mi.specTypes <: invokeTypes <: m.sig (though it might not strictly hold), so we only need to check the other subtypes
+                                    replaced_edge = jl_subtype(invokeTypes, type) && (ambig == morespec_is || is_replacing(type, m, d, n, invokeTypes, NULL, morespec));
+                                }
+                                else {
+                                    replaced_edge = replaced_dispatch;
+                                }
+                                if (replaced_edge) {
                                     invalidate_method_instance(&do_nothing_with_codeinst, caller, max_world, 1);
                                     invalidated = 1;
-                                } else {
-                                    // invoke-dispatch, check invokeTypes for validity
-                                    struct jl_typemap_assoc search = {invokeTypes, method->primary_world, NULL, 0, ~(size_t)0};
-                                    oldentry = jl_typemap_assoc_by_type(jl_atomic_load_relaxed(&mt->defs), &search, /*offs*/0, /*subtype*/0);
-                                    if (oldentry && oldentry->func.method == mi->def.method) {
-                                        // We can safely keep this method
-                                        jl_array_ptr_set(backedges, insb++, invokeTypes);
-                                        jl_array_ptr_set(backedges, insb++, caller);
-                                    } else {
-                                        invalidate_method_instance(&do_nothing_with_codeinst, caller, max_world, 1);
-                                        invalidated = 1;
-                                    }
+                                }
+                                else {
+                                    insb = set_next_edge(backedges, insb, invokeTypes, caller);
                                 }
                             }
                             jl_array_del_end(backedges, nb - insb);
                         }
-                        if (!mi->backedges || jl_array_len(mi->backedges) == 0) {
-                            jl_array_ptr_1d_push(oldmi, (jl_value_t*)mi);
-                            invalidate_external(mi, max_world);
-                            if (mi->backedges) {
-                                invalidated = 1;
-                                invalidate_backedges(&do_nothing_with_codeinst, mi, max_world, "jl_method_table_insert");
-                            }
-                        }
+                        jl_array_ptr_1d_push(oldmi, (jl_value_t*)mi);
+                        invalidate_external(mi, max_world);
                     }
                 }
             }
@@ -2218,12 +2232,33 @@ jl_code_instance_t *jl_compile_method_internal(jl_method_instance_t *mi, size_t 
                 mi, codeinst2->rettype,
                 codeinst2->min_world, codeinst2->max_world);
         if (jl_atomic_load_relaxed(&codeinst->invoke) == NULL) {
-            // once set, don't change invoke-ptr, as that leads to race conditions
-            // with the (not) simultaneous updates to invoke and specptr
-            codeinst->isspecsig = codeinst2->isspecsig;
             codeinst->rettype_const = codeinst2->rettype_const;
-            jl_atomic_store_release(&codeinst->specptr.fptr, jl_atomic_load_relaxed(&codeinst2->specptr.fptr));
-            jl_atomic_store_release(&codeinst->invoke, jl_atomic_load_relaxed(&codeinst2->invoke));
+            uint8_t specsigflags = jl_atomic_load_acquire(&codeinst2->specsigflags);
+            jl_callptr_t invoke = jl_atomic_load_acquire(&codeinst2->invoke);
+            void *fptr = jl_atomic_load_relaxed(&codeinst2->specptr.fptr);
+            if (fptr != NULL) {
+                while (!(specsigflags & 0b10)) {
+                    jl_cpu_pause();
+                    specsigflags = jl_atomic_load_acquire(&codeinst2->specsigflags);
+                }
+                invoke = jl_atomic_load_relaxed(&codeinst2->invoke);
+                void *prev_fptr = NULL;
+                // see jitlayers.cpp for the ordering restrictions here
+                if (jl_atomic_cmpswap_acqrel(&codeinst->specptr.fptr, &prev_fptr, fptr)) {
+                    jl_atomic_store_relaxed(&codeinst->specsigflags, specsigflags & 0b1);
+                    jl_atomic_store_release(&codeinst->invoke, invoke);
+                    jl_atomic_store_release(&codeinst->specsigflags, specsigflags);
+                } else {
+                    // someone else already compiled it
+                    while (!(jl_atomic_load_acquire(&codeinst->specsigflags) & 0b10)) {
+                        jl_cpu_pause();
+                    }
+                    // codeinst is now set up fully, safe to return
+                }
+            } else {
+                jl_callptr_t prev = NULL;
+                jl_atomic_cmpswap_acqrel(&codeinst->invoke, &prev, invoke);
+            }
         }
         // don't call record_precompile_statement here, since we already compiled it as mi2 which is better
         return codeinst;
@@ -2248,14 +2283,22 @@ jl_code_instance_t *jl_compile_method_internal(jl_method_instance_t *mi, size_t 
             jl_method_instance_t *unspecmi = jl_atomic_load_relaxed(&def->unspecialized);
             if (unspecmi) {
                 jl_code_instance_t *unspec = jl_atomic_load_relaxed(&unspecmi->cache);
-                if (unspec && jl_atomic_load_acquire(&unspec->invoke)) {
+                jl_callptr_t unspec_invoke = NULL;
+                if (unspec && (unspec_invoke = jl_atomic_load_acquire(&unspec->invoke))) {
                     jl_code_instance_t *codeinst = jl_new_codeinst(mi,
                         (jl_value_t*)jl_any_type, NULL, NULL,
                         0, 1, ~(size_t)0, 0, 0, jl_nothing, 0);
-                    codeinst->isspecsig = 0;
-                    codeinst->specptr = unspec->specptr;
+                    void *unspec_fptr = jl_atomic_load_relaxed(&unspec->specptr.fptr);
+                    if (unspec_fptr) {
+                        // wait until invoke and specsigflags are properly set
+                        while (!(jl_atomic_load_acquire(&unspec->specsigflags) & 0b10)) {
+                            jl_cpu_pause();
+                        }
+                        unspec_invoke = jl_atomic_load_relaxed(&unspec->invoke);
+                    }
+                    jl_atomic_store_release(&codeinst->specptr.fptr, unspec_fptr);
                     codeinst->rettype_const = unspec->rettype_const;
-                    jl_atomic_store_relaxed(&codeinst->invoke, jl_atomic_load_relaxed(&unspec->invoke));
+                    jl_atomic_store_release(&codeinst->invoke, unspec_invoke);
                     jl_mi_cache_insert(mi, codeinst);
                     record_precompile_statement(mi);
                     return codeinst;
@@ -2272,7 +2315,7 @@ jl_code_instance_t *jl_compile_method_internal(jl_method_instance_t *mi, size_t 
             jl_code_instance_t *codeinst = jl_new_codeinst(mi,
                 (jl_value_t*)jl_any_type, NULL, NULL,
                 0, 1, ~(size_t)0, 0, 0, jl_nothing, 0);
-            jl_atomic_store_relaxed(&codeinst->invoke, jl_fptr_interpret_call);
+            jl_atomic_store_release(&codeinst->invoke, jl_fptr_interpret_call);
             jl_mi_cache_insert(mi, codeinst);
             record_precompile_statement(mi);
             return codeinst;
@@ -2289,7 +2332,8 @@ jl_code_instance_t *jl_compile_method_internal(jl_method_instance_t *mi, size_t 
         jl_method_instance_t *unspec = jl_get_unspecialized_from_mi(mi);
         jl_code_instance_t *ucache = jl_get_method_inferred(unspec, (jl_value_t*)jl_any_type, 1, ~(size_t)0);
         // ask codegen to make the fptr for unspec
-        if (jl_atomic_load_acquire(&ucache->invoke) == NULL) {
+        jl_callptr_t ucache_invoke = jl_atomic_load_acquire(&ucache->invoke);
+        if (ucache_invoke == NULL) {
             if (def->source == jl_nothing && (jl_atomic_load_relaxed(&ucache->def->uninferred) == jl_nothing ||
                                               jl_atomic_load_relaxed(&ucache->def->uninferred) == NULL)) {
                 jl_printf(JL_STDERR, "source not available for ");
@@ -2298,19 +2342,29 @@ jl_code_instance_t *jl_compile_method_internal(jl_method_instance_t *mi, size_t 
                 jl_error("source missing for method that needs to be compiled");
             }
             jl_generate_fptr_for_unspecialized(ucache);
+            ucache_invoke = jl_atomic_load_acquire(&ucache->invoke);
         }
-        assert(jl_atomic_load_relaxed(&ucache->invoke) != NULL);
-        if (jl_atomic_load_relaxed(&ucache->invoke) != jl_fptr_sparam &&
-            jl_atomic_load_relaxed(&ucache->invoke) != jl_fptr_interpret_call) {
+        assert(ucache_invoke != NULL);
+        if (ucache_invoke != jl_fptr_sparam &&
+            ucache_invoke != jl_fptr_interpret_call) {
             // only these care about the exact specTypes, otherwise we can use it directly
             return ucache;
         }
         codeinst = jl_new_codeinst(mi, (jl_value_t*)jl_any_type, NULL, NULL,
             0, 1, ~(size_t)0, 0, 0, jl_nothing, 0);
-        codeinst->isspecsig = 0;
-        codeinst->specptr = ucache->specptr;
+        void *unspec_fptr = jl_atomic_load_relaxed(&ucache->specptr.fptr);
+        if (unspec_fptr) {
+            // wait until invoke and specsigflags are properly set
+            while (!(jl_atomic_load_acquire(&ucache->specsigflags) & 0b10)) {
+                jl_cpu_pause();
+            }
+            ucache_invoke = jl_atomic_load_relaxed(&ucache->invoke);
+        }
+        // unspec is always not specsig, but might use specptr
+        jl_atomic_store_relaxed(&codeinst->specsigflags, jl_atomic_load_relaxed(&ucache->specsigflags) & 0b10);
+        jl_atomic_store_relaxed(&codeinst->specptr.fptr, unspec_fptr);
         codeinst->rettype_const = ucache->rettype_const;
-        jl_atomic_store_relaxed(&codeinst->invoke, jl_atomic_load_relaxed(&ucache->invoke));
+        jl_atomic_store_release(&codeinst->invoke, ucache_invoke);
         jl_mi_cache_insert(mi, codeinst);
     }
     else {
@@ -2328,11 +2382,8 @@ jl_value_t *jl_fptr_const_return(jl_value_t *f, jl_value_t **args, uint32_t narg
 jl_value_t *jl_fptr_args(jl_value_t *f, jl_value_t **args, uint32_t nargs, jl_code_instance_t *m)
 {
     jl_fptr_args_t invoke = jl_atomic_load_relaxed(&m->specptr.fptr1);
-    while (1) {
-        if (invoke)
-            return invoke(f, args, nargs);
-        invoke = jl_atomic_load_acquire(&m->specptr.fptr1); // require forward progress with acquire annotation
-    }
+    assert(invoke && "Forgot to set specptr for jl_fptr_args!");
+    return invoke(f, args, nargs);
 }
 
 jl_value_t *jl_fptr_sparam(jl_value_t *f, jl_value_t **args, uint32_t nargs, jl_code_instance_t *m)
@@ -2340,11 +2391,8 @@ jl_value_t *jl_fptr_sparam(jl_value_t *f, jl_value_t **args, uint32_t nargs, jl_
     jl_svec_t *sparams = m->def->sparam_vals;
     assert(sparams != jl_emptysvec);
     jl_fptr_sparam_t invoke = jl_atomic_load_relaxed(&m->specptr.fptr3);
-    while (1) {
-        if (invoke)
-            return invoke(f, args, nargs, sparams);
-        invoke = jl_atomic_load_acquire(&m->specptr.fptr3); // require forward progress with acquire annotation
-    }
+    assert(invoke && "Forgot to set specptr for jl_fptr_sparam!");
+    return invoke(f, args, nargs, sparams);
 }
 
 JL_DLLEXPORT jl_callptr_t jl_fptr_args_addr = &jl_fptr_args;
@@ -2667,7 +2715,7 @@ STATIC_INLINE jl_value_t *_jl_invoke(jl_value_t *F, jl_value_t **args, uint32_t 
     jl_code_instance_t *codeinst = jl_atomic_load_relaxed(&mfunc->cache);
     while (codeinst) {
         if (codeinst->min_world <= world && world <= codeinst->max_world) {
-            jl_callptr_t invoke = jl_atomic_load_relaxed(&codeinst->invoke);
+            jl_callptr_t invoke = jl_atomic_load_acquire(&codeinst->invoke);
             if (invoke != NULL) {
                 jl_value_t *res = invoke(F, args, nargs, codeinst);
                 return verify_type(res);
@@ -2687,7 +2735,7 @@ STATIC_INLINE jl_value_t *_jl_invoke(jl_value_t *F, jl_value_t **args, uint32_t 
     errno = last_errno;
     if (jl_options.malloc_log)
         jl_gc_sync_total_bytes(last_alloc); // discard allocation count from compilation
-    jl_callptr_t invoke = jl_atomic_load_relaxed(&codeinst->invoke);
+    jl_callptr_t invoke = jl_atomic_load_acquire(&codeinst->invoke);
     jl_value_t *res = invoke(F, args, nargs, codeinst);
     return verify_type(res);
 }
@@ -3395,22 +3443,9 @@ static jl_value_t *ml_matches(jl_methtable_t *mt,
                     }
                     if (ti != jl_bottom_type) {
                         disjoint = 0;
-                        // m and m2 are ambiguous, but let's see if we can find another method (m3)
-                        // that dominates their intersection, and means we can ignore this
-                        size_t k;
-                        for (k = i; k > 0; k--) {
-                            jl_method_match_t *matc3 = (jl_method_match_t*)jl_array_ptr_ref(env.t, k - 1);
-                            jl_method_t *m3 = matc3->method;
-                            if ((jl_subtype(ti, m3->sig) || (isect2 && jl_subtype(isect2, m3->sig)))
-                                    && jl_type_morespecific((jl_value_t*)m3->sig, (jl_value_t*)m->sig)
-                                    && jl_type_morespecific((jl_value_t*)m3->sig, (jl_value_t*)m2->sig))
-                                break;
-                        }
-                        if (k == 0) {
-                            ambig_groupid[j - 1] = i; // ambiguity covering range [i:j)
-                            isect2 = NULL;
-                            break;
-                        }
+                        ambig_groupid[j - 1] = i; // ambiguity covering range [i:j)
+                        isect2 = NULL;
+                        break;
                     }
                     isect2 = NULL;
                 }
@@ -3489,19 +3524,89 @@ static jl_value_t *ml_matches(jl_methtable_t *mt,
             // Compute whether anything could be ambiguous by seeing if any two
             // remaining methods in the result are in the same ambiguity group.
             assert(len > 0);
-            uint32_t agid = ambig_groupid[0];
-            for (i = 1; i < len; i++) {
-                if (!skip[i]) {
-                    if (agid == ambig_groupid[i]) {
-                        has_ambiguity = 1;
-                        break;
+            if (!has_ambiguity) {
+                // quick test
+                uint32_t agid = ambig_groupid[0];
+                for (i = 1; i < len; i++) {
+                    if (!skip[i]) {
+                        if (agid == ambig_groupid[i]) {
+                            has_ambiguity = 1;
+                            break;
+                        }
+                        agid = ambig_groupid[i];
                     }
-                    agid = ambig_groupid[i];
+                }
+                // laborious test, checking for existence and coverage of m3
+                if (has_ambiguity) {
+                    // some method is ambiguous, but let's see if we can find another method (m3)
+                    // outside of the ambiguity group that dominates any ambiguous methods,
+                    // and means we can ignore this for has_ambiguity
+                    has_ambiguity = 0;
+                    for (i = 0; i < len; i++) {
+                        if (skip[i])
+                            continue;
+                        uint32_t agid = ambig_groupid[i];
+                        jl_method_match_t *matc = (jl_method_match_t*)jl_array_ptr_ref(env.t, i);
+                        jl_method_t *m = matc->method;
+                        int subt = matc->fully_covers == FULLY_COVERS; // jl_subtype((jl_value_t*)type, (jl_value_t*)m->sig)
+                        for (j = agid; j < len && ambig_groupid[j] == agid; j++) {
+                            // n.b. even if we skipped them earlier, they still might
+                            // contribute to the ambiguities (due to lock of transitivity of
+                            // morespecific over subtyping)
+                            if (j == i)
+                                continue;
+                            jl_method_match_t *matc2 = (jl_method_match_t*)jl_array_ptr_ref(env.t, j);
+                            jl_method_t *m2 = matc2->method;
+                            int subt2 = matc2->fully_covers == FULLY_COVERS; // jl_subtype((jl_value_t*)type, (jl_value_t*)m2->sig)
+                            // if they aren't themselves simply ordered
+                            if (jl_type_morespecific((jl_value_t*)m->sig, (jl_value_t*)m2->sig) ||
+                                jl_type_morespecific((jl_value_t*)m2->sig, (jl_value_t*)m->sig))
+                                continue;
+                            jl_value_t *ti;
+                            if (subt) {
+                                ti = (jl_value_t*)matc2->spec_types;
+                                isect2 = NULL;
+                            }
+                            else if (subt2) {
+                                ti = (jl_value_t*)matc->spec_types;
+                                isect2 = NULL;
+                            }
+                            else {
+                                jl_type_intersection2((jl_value_t*)matc->spec_types, (jl_value_t*)matc2->spec_types, &env.match.ti, &isect2);
+                                ti = env.match.ti;
+                            }
+                            // and their intersection contributes to the ambiguity cycle
+                            if (ti != jl_bottom_type) {
+                                // now look for a third method m3 outside of this ambiguity group that fully resolves this intersection
+                                size_t k;
+                                for (k = agid; k > 0; k--) {
+                                    jl_method_match_t *matc3 = (jl_method_match_t*)jl_array_ptr_ref(env.t, k);
+                                    jl_method_t *m3 = matc3->method;
+                                    if ((jl_subtype(ti, m3->sig) || (isect2 && jl_subtype(isect2, m3->sig)))
+                                            && jl_type_morespecific((jl_value_t*)m3->sig, (jl_value_t*)m->sig)
+                                            && jl_type_morespecific((jl_value_t*)m3->sig, (jl_value_t*)m2->sig)) {
+                                        //if (jl_subtype(matc->spec_types, ti) || jl_subtype(matc->spec_types, matc3->m3->sig))
+                                        //    // check if it covered not only this intersection, but all intersections with matc
+                                        //    // if so, we do not need to check all of them separately
+                                        //    j = len;
+                                        break;
+                                    }
+                                }
+                                if (k == 0)
+                                    has_ambiguity = 1;
+                                isect2 = NULL;
+                            }
+                            if (has_ambiguity)
+                                break;
+                        }
+                        if (has_ambiguity)
+                            break;
+                    }
                 }
             }
             // If we're only returning possible matches, now filter out any method
             // whose intersection is fully ambiguous with the group it is in.
-            if (!include_ambiguous) {
+            if (!include_ambiguous && has_ambiguity) {
                 for (i = 0; i < len; i++) {
                     if (skip[i])
                         continue;
@@ -3519,7 +3624,7 @@ static jl_value_t *ml_matches(jl_methtable_t *mt,
                         int subt2 = matc2->fully_covers == FULLY_COVERS; // jl_subtype((jl_value_t*)type, (jl_value_t*)m2->sig)
                         // if their intersection contributes to the ambiguity cycle
                         if (subt || subt2 || !jl_has_empty_intersection((jl_value_t*)ti, m2->sig)) {
-                            // and the contribution of m is ambiguous with the portion of the cycle from m2
+                            // and the contribution of m is fully ambiguous with the portion of the cycle from m2
                             if (subt2 || jl_subtype((jl_value_t*)ti, m2->sig)) {
                                 // but they aren't themselves simply ordered (here
                                 // we don't consider that a third method might be

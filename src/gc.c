@@ -488,6 +488,11 @@ JL_DLLEXPORT void jl_gc_enable_finalizers(jl_task_t *ct, int on)
     }
 }
 
+JL_DLLEXPORT int8_t jl_gc_is_in_finalizer(void)
+{
+    return jl_current_task->ptls->in_finalizer;
+}
+
 static void schedule_all_finalizers(arraylist_t *flist) JL_NOTSAFEPOINT
 {
     void **items = flist->items;
@@ -1985,6 +1990,7 @@ STATIC_INLINE void gc_mark_array8(jl_ptls_t ptls, jl_value_t *ary8_parent, jl_va
     jl_gc_markqueue_t *mq = &ptls->mark_queue;
     jl_value_t *new_obj;
     size_t elsize = ((jl_array_t *)ary8_parent)->elsize / sizeof(jl_value_t *);
+    assert(elsize > 0);
     // Decide whether need to chunk ary8
     size_t nrefs = (ary8_end - ary8_begin) / elsize;
     if (nrefs > MAX_REFS_AT_ONCE) {
@@ -2016,6 +2022,7 @@ STATIC_INLINE void gc_mark_array16(jl_ptls_t ptls, jl_value_t *ary16_parent, jl_
     jl_gc_markqueue_t *mq = &ptls->mark_queue;
     jl_value_t *new_obj;
     size_t elsize = ((jl_array_t *)ary16_parent)->elsize / sizeof(jl_value_t *);
+    assert(elsize > 0);
     // Decide whether need to chunk ary16
     size_t nrefs = (ary16_end - ary16_begin) / elsize;
     if (nrefs > MAX_REFS_AT_ONCE) {
@@ -2668,7 +2675,6 @@ static void gc_mark_roots(jl_gc_markqueue_t *mq)
     }
     gc_try_claim_and_push(mq, jl_all_methods, NULL);
     gc_try_claim_and_push(mq, _jl_debug_method_invalidation, NULL);
-    gc_try_claim_and_push(mq, jl_build_ids, NULL);
     // constants
     gc_try_claim_and_push(mq, jl_emptytuple_type, NULL);
     gc_try_claim_and_push(mq, cmpswap_names, NULL);
@@ -3227,8 +3233,6 @@ void jl_init_thread_heap(jl_ptls_t ptls)
 // System-wide initializations
 void jl_gc_init(void)
 {
-    if (jl_options.heap_size_hint)
-        jl_gc_set_max_memory(jl_options.heap_size_hint);
 
     JL_MUTEX_INIT(&heapsnapshot_lock);
     JL_MUTEX_INIT(&finalizers_lock);
@@ -3252,8 +3256,15 @@ void jl_gc_init(void)
     uint64_t constrained_mem = uv_get_constrained_memory();
     if (constrained_mem > 0 && constrained_mem < total_mem)
         total_mem = constrained_mem;
-    max_total_memory = total_mem / 10 * 6;
+    double percent;
+    if (total_mem < 128e9)
+        percent = total_mem * 2.34375e-12 + 0.6; // 60% at 0 gigs and 90% at 128 to not
+    else                                         // overcommit too much on memory contrained devices
+        percent = 0.9;
+    max_total_memory = total_mem * percent;
 #endif
+    if (jl_options.heap_size_hint)
+        jl_gc_set_max_memory(jl_options.heap_size_hint);
 
     t_start = jl_hrtime();
 }
@@ -3264,6 +3275,11 @@ JL_DLLEXPORT void jl_gc_set_max_memory(uint64_t max_mem)
         && max_mem < (uint64_t)1 << (sizeof(memsize_t) * 8 - 1)) {
         max_total_memory = max_mem;
     }
+}
+
+JL_DLLEXPORT uint64_t jl_gc_get_max_memory(void)
+{
+    return max_total_memory;
 }
 
 // callback for passing OOM errors from gmp

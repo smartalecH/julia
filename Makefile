@@ -116,7 +116,7 @@ check-whitespace:
 ifneq ($(NO_GIT), 1)
 	@# Append the directory containing the julia we just built to the end of `PATH`,
 	@# to give us the best chance of being able to run this check.
-	@PATH="$(PATH):$(dir $(JULIA_EXECUTABLE))" $(JULIAHOME)/contrib/check-whitespace.jl
+	@PATH="$(PATH):$(dir $(JULIA_EXECUTABLE))" julia $(call cygpath_w,$(JULIAHOME)/contrib/check-whitespace.jl)
 else
 	$(warn "Skipping whitespace check because git is unavailable")
 endif
@@ -152,7 +152,7 @@ release-candidate: release testall
 	@echo 10. Follow packaging instructions in doc/build/distributing.md to create binary packages for all platforms
 	@echo 11. Upload to AWS, update https://julialang.org/downloads and http://status.julialang.org/stable links
 	@echo 12. Update checksums on AWS for tarball and packaged binaries
-	@echo 13. Update versions.json
+	@echo 13. Update versions.json. Wait at least 60 minutes before proceeding to step 14.
 	@echo 14. Push to Juliaup (https://github.com/JuliaLang/juliaup/wiki/Adding-a-Julia-version)
 	@echo 15. Announce on mailing lists
 	@echo 16. Change master to release-0.X in base/version.jl and base/version_git.sh as in 4cb1e20
@@ -253,7 +253,7 @@ endef
 
 install: $(build_depsbindir)/stringreplace docs
 	@$(MAKE) $(QUIET_MAKE) $(JULIA_BUILD_MODE)
-	@for subdir in $(bindir) $(datarootdir)/julia/stdlib/$(VERSDIR) $(docdir) $(man1dir) $(includedir)/julia $(libdir) $(private_libdir) $(sysconfdir) $(libexecdir); do \
+	@for subdir in $(bindir) $(datarootdir)/julia/stdlib/$(VERSDIR) $(docdir) $(man1dir) $(includedir)/julia $(libdir) $(private_libdir) $(sysconfdir) $(private_libexecdir); do \
 		mkdir -p $(DESTDIR)$$subdir; \
 	done
 
@@ -268,8 +268,8 @@ else ifeq ($(JULIA_BUILD_MODE),debug)
 	-$(INSTALL_M) $(build_libdir)/libjulia-internal-debug.dll.a $(DESTDIR)$(libdir)/
 endif
 
-	# We have a single exception; we want 7z.dll to live in libexec, not bin, so that 7z.exe can find it.
-	-mv $(DESTDIR)$(bindir)/7z.dll $(DESTDIR)$(libexecdir)/
+	# We have a single exception; we want 7z.dll to live in private_libexecdir, not bindir, so that 7z.exe can find it.
+	-mv $(DESTDIR)$(bindir)/7z.dll $(DESTDIR)$(private_libexecdir)/
 	-$(INSTALL_M) $(build_bindir)/libopenlibm.dll.a $(DESTDIR)$(libdir)/
 	-$(INSTALL_M) $(build_libdir)/libssp.dll.a $(DESTDIR)$(libdir)/
 	# The rest are compiler dependencies, as an example memcpy is exported by msvcrt
@@ -331,14 +331,14 @@ endif
 		done \
 	done
 endif
-	# Install `7z` into libexec/
-	$(INSTALL_M) $(build_bindir)/7z$(EXE) $(DESTDIR)$(libexecdir)/
+	# Install `7z` into private_libexecdir
+	$(INSTALL_M) $(build_bindir)/7z$(EXE) $(DESTDIR)$(private_libexecdir)/
 
-	# Install `lld` into libexec/
-	$(INSTALL_M) $(build_depsbindir)/lld$(EXE) $(DESTDIR)$(libexecdir)/
+	# Install `lld` into private_libexecdir
+	$(INSTALL_M) $(build_depsbindir)/lld$(EXE) $(DESTDIR)$(private_libexecdir)/
 
-	# Install `dsymutil` into libexec/
-	$(INSTALL_M) $(build_depsbindir)/dsymutil$(EXE) $(DESTDIR)$(libexecdir)/
+	# Install `dsymutil` into private_libexecdir/
+	$(INSTALL_M) $(build_depsbindir)/dsymutil$(EXE) $(DESTDIR)$(private_libexecdir)/
 
 	# Copy public headers
 	cp -R -L $(build_includedir)/julia/* $(DESTDIR)$(includedir)/julia
@@ -388,7 +388,7 @@ ifneq ($(DARWIN_FRAMEWORK),1)
 endif
 else ifneq (,$(findstring $(OS),Linux FreeBSD))
 	for j in $(JL_TARGETS) ; do \
-		$(PATCHELF) --set-rpath '$$ORIGIN/$(private_libdir_rel):$$ORIGIN/$(libdir_rel)' $(DESTDIR)$(bindir)/$$j; \
+		$(PATCHELF) $(PATCHELF_SET_RPATH_ARG) '$$ORIGIN/$(private_libdir_rel):$$ORIGIN/$(libdir_rel)' $(DESTDIR)$(bindir)/$$j; \
 	done
 endif
 
@@ -420,17 +420,17 @@ endif
 endif
 else ifneq (,$(findstring $(OS),Linux FreeBSD))
 ifeq ($(JULIA_BUILD_MODE),release)
-	$(PATCHELF) --set-rpath '$$ORIGIN:$$ORIGIN/$(reverse_private_libdir_rel)' $(DESTDIR)$(private_libdir)/libjulia-internal.$(SHLIB_EXT)
-	$(PATCHELF) --set-rpath '$$ORIGIN:$$ORIGIN/$(reverse_private_libdir_rel)' $(DESTDIR)$(private_libdir)/libjulia-codegen.$(SHLIB_EXT)
+	$(PATCHELF) $(PATCHELF_SET_RPATH_ARG) '$$ORIGIN:$$ORIGIN/$(reverse_private_libdir_rel)' $(DESTDIR)$(private_libdir)/libjulia-internal.$(SHLIB_EXT)
+	$(PATCHELF) $(PATCHELF_SET_RPATH_ARG) '$$ORIGIN:$$ORIGIN/$(reverse_private_libdir_rel)' $(DESTDIR)$(private_libdir)/libjulia-codegen.$(SHLIB_EXT)
 else ifeq ($(JULIA_BUILD_MODE),debug)
-	$(PATCHELF) --set-rpath '$$ORIGIN:$$ORIGIN/$(reverse_private_libdir_rel)' $(DESTDIR)$(private_libdir)/libjulia-internal-debug.$(SHLIB_EXT)
-	$(PATCHELF) --set-rpath '$$ORIGIN:$$ORIGIN/$(reverse_private_libdir_rel)' $(DESTDIR)$(private_libdir)/libjulia-codegen-debug.$(SHLIB_EXT)
+	$(PATCHELF) $(PATCHELF_SET_RPATH_ARG) '$$ORIGIN:$$ORIGIN/$(reverse_private_libdir_rel)' $(DESTDIR)$(private_libdir)/libjulia-internal-debug.$(SHLIB_EXT)
+	$(PATCHELF) $(PATCHELF_SET_RPATH_ARG) '$$ORIGIN:$$ORIGIN/$(reverse_private_libdir_rel)' $(DESTDIR)$(private_libdir)/libjulia-codegen-debug.$(SHLIB_EXT)
 endif
 endif
 
 	# Fix rpaths for dependencies. This should be fixed in BinaryBuilder later.
 ifeq ($(OS), Linux)
-	-$(PATCHELF) --set-rpath '$$ORIGIN' $(DESTDIR)$(private_shlibdir)/libLLVM.$(SHLIB_EXT)
+	-$(PATCHELF) $(PATCHELF_SET_RPATH_ARG) '$$ORIGIN' $(DESTDIR)$(private_shlibdir)/libLLVM.$(SHLIB_EXT)
 endif
 
 ifneq ($(LOADER_BUILD_DEP_LIBS),$(LOADER_INSTALL_DEP_LIBS))
@@ -460,7 +460,7 @@ ifeq ($(OS),FreeBSD)
 	# don't set libgfortran's RPATH, it won't be able to find its friends on systems
 	# that don't have the exact GCC port installed used for the build.
 	for lib in $(DESTDIR)$(private_libdir)/libgfortran*$(SHLIB_EXT)*; do \
-		$(PATCHELF) --set-rpath '$$ORIGIN' $$lib; \
+		$(PATCHELF) $(PATCHELF_SET_RPATH_ARG) '$$ORIGIN' $$lib; \
 	done
 endif
 

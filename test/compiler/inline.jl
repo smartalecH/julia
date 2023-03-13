@@ -28,7 +28,7 @@ function test_inlined_symbols(func, argtypes)
     ast = Expr(:block)
     ast.args = src.code
     walk(ast) do e
-        if isa(e, Core.Slot)
+        if isa(e, Core.SlotNumber)
             @test 1 <= e.id <= nl
         end
         if isa(e, Core.NewvarNode)
@@ -1754,8 +1754,7 @@ let interp = Core.Compiler.NativeInterpreter()
 
     # ok, now delete the callsite flag, and see the second inlining pass can inline the call
     @eval Core.Compiler $ir.stmts[$i][:flag] &= ~IR_FLAG_NOINLINE
-    inlining = Core.Compiler.InliningState(Core.Compiler.OptimizationParams(interp), nothing,
-        Core.Compiler.get_world_counter(interp), interp)
+    inlining = Core.Compiler.InliningState(interp)
     ir = Core.Compiler.ssa_inlining_pass!(ir, inlining, false)
     @test count(isinvoke(:*), ir.stmts.inst) == 0
     @test count(iscall((ir, Core.Intrinsics.mul_int)), ir.stmts.inst) == 1
