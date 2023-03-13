@@ -486,6 +486,7 @@ static void reportWriterError(const ErrorInfoBase &E)
     jl_safe_printf("ERROR: failed to emit output file %s\n", err.c_str());
 }
 
+#if JL_LLVM_VERSION <=14000
 static void injectCRTAlias(Module &M, StringRef name, StringRef alias, FunctionType *FT)
 {
     Function *target = M.getFunction(alias);
@@ -502,7 +503,7 @@ static void injectCRTAlias(Module &M, StringRef name, StringRef alias, FunctionT
     auto val = builder.CreateCall(target, CallArgs);
     builder.CreateRet(val);
 }
-
+#endif
 void multiversioning_preannotate(Module &M);
 
 // See src/processor.h for documentation about this table. Corresponds to jl_image_shard_t.
@@ -996,6 +997,7 @@ static void add_output_impl(Module &M, TargetMachine &SourceTM, std::string *out
         }
     }
     // no need to inject aliases if we have no functions
+#if JL_LLVM_VERSION<=14000
     if (inject_aliases) {
         // We would like to emit an alias or an weakref alias to redirect these symbols
         // but LLVM doesn't let us emit a GlobalAlias to a declaration...
@@ -1012,7 +1014,7 @@ static void add_output_impl(Module &M, TargetMachine &SourceTM, std::string *out
         injectCRTAlias(M, "__truncdfhf2", "julia__truncdfhf2",
                 FunctionType::get(Type::getHalfTy(M.getContext()), { Type::getDoubleTy(M.getContext()) }, false));
     }
-
+#endif
     timers.optimize.stopTimer();
 
     if (opt) {
