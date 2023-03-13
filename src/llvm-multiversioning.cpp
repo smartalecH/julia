@@ -19,6 +19,7 @@
 #include <llvm/IR/Function.h>
 #include <llvm/IR/Instructions.h>
 #include <llvm/IR/Constants.h>
+#include <llvm/IR/Dominators.h>
 #include <llvm/IR/LLVMContext.h>
 #include <llvm/Analysis/LoopInfo.h>
 #include <llvm/Analysis/CallGraph.h>
