@@ -8684,14 +8684,15 @@ static JuliaVariable *julia_const_gv(jl_value_t *val)
     return nullptr;
 }
 //Float16 fun
-static void makeCastCall(Module &M, StringRef wrapperName, StringRef calledName, FunctionType *FTwrapper, FunctionType *FTcalled)
+static void makeCastCall(Module &M, StringRef wrapperName, StringRef calledName, FunctionType *FTwrapper, FunctionType *FTcalled, bool external)
 {
     Function *calledFun = M.getFunction(calledName);
     if (!calledFun) {
         calledFun = Function::Create(FTcalled, Function::ExternalLinkage, calledName, M);
     }
-    auto wrapperFun = Function::Create(FTwrapper, Function::ExternalLinkage, wrapperName, M);
-
+    auto linkage = external ? Function::ExternalLinkage : Function::InternalLinkage;
+    auto wrapperFun = Function::Create(FTwrapper, linkage, wrapperName, M);
+    wrapperFun->addFnAttr(Attribute::AlwaysInline);
     llvm::IRBuilder<> builder(BasicBlock::Create(M.getContext(), "top", wrapperFun));
     SmallVector<Value *, 4> CallArgs;
     if (wrapperFun->arg_size() != calledFun->arg_size()){
@@ -8708,20 +8709,19 @@ static void makeCastCall(Module &M, StringRef wrapperName, StringRef calledName,
     builder.CreateRet(retval);
 }
 
-static void emitFloat16Wrappers(Module &M)
+void emitFloat16Wrappers(Module &M, bool external)
 {
     auto &ctx = M.getContext();
     makeCastCall(M, "__gnu_h2f_ieee", "julia__gnu_h2f_ieee", FunctionType::get(Type::getFloatTy(ctx), { Type::getHalfTy(ctx) }, false),
-                FunctionType::get(Type::getFloatTy(ctx), { Type::getInt16Ty(ctx) }, false));
+                FunctionType::get(Type::getFloatTy(ctx), { Type::getInt16Ty(ctx) }, false), external);
     makeCastCall(M, "__extendhfsf2", "julia__gnu_h2f_ieee", FunctionType::get(Type::getFloatTy(ctx), { Type::getHalfTy(ctx) }, false),
-                FunctionType::get(Type::getFloatTy(ctx), { Type::getInt16Ty(ctx) }, false));
+                FunctionType::get(Type::getFloatTy(ctx), { Type::getInt16Ty(ctx) }, false), external);
     makeCastCall(M, "__gnu_f2h_ieee", "julia__gnu_f2h_ieee", FunctionType::get(Type::getHalfTy(ctx), { Type::getFloatTy(ctx) }, false),
-                FunctionType::get(Type::getInt16Ty(ctx), { Type::getFloatTy(ctx) }, false));
+                FunctionType::get(Type::getInt16Ty(ctx), { Type::getFloatTy(ctx) }, false), external);
     makeCastCall(M, "__truncsfhf2", "julia__gnu_f2h_ieee", FunctionType::get(Type::getHalfTy(ctx), { Type::getFloatTy(ctx) }, false),
-                FunctionType::get(Type::getInt16Ty(ctx), { Type::getFloatTy(ctx) }, false));
+                FunctionType::get(Type::getInt16Ty(ctx), { Type::getFloatTy(ctx) }, false), external);
     makeCastCall(M, "__truncdfhf2", "julia__truncdfhf2", FunctionType::get(Type::getHalfTy(ctx), { Type::getDoubleTy(ctx) }, false),
-                FunctionType::get(Type::getInt16Ty(ctx), { Type::getDoubleTy(ctx) }, false));
-
+                FunctionType::get(Type::getInt16Ty(ctx), { Type::getDoubleTy(ctx) }, false), external);
 }
 
 static void init_f16_funcs(void)
@@ -8729,7 +8729,7 @@ static void init_f16_funcs(void)
     auto ctx = jl_ExecutionEngine->acquireContext();
     auto TSM =  jl_create_ts_module("F16Wrappers", ctx, imaging_default());
     auto aliasM = TSM.getModuleUnlocked();
-    emitFloat16Wrappers(*aliasM);
+    emitFloat16Wrappers(*aliasM, true);
     jl_ExecutionEngine->addModule(std::move(TSM));
 }
 
