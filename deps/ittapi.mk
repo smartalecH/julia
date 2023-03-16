@@ -7,7 +7,8 @@ $(eval $(call git-external,ittapi,ITTAPI,CMakeLists.txt,,$(SRCCACHE)))
 
 get-ittapi: $(ITTAPI_SRC_FILE)
 extract-ittapi: $(SRCCACHE)/$(ITTAPI_SRC_DIR)/source-extracted
-configure-libgit2:
-compile-libgit2:
-fastcheck-libgit2: #none
-check-libgit2:
+configure-ittapi:
+compile-ittapi:
+install-ittapi:
+fastcheck-ittapi: #none
+check-ittapi:
