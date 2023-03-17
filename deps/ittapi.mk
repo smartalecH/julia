@@ -22,8 +22,10 @@ define ITTAPI_INSTALL
 	mkdir -p $2/$$(build_includedir)/ittapi
 	cp -a $1/bin/libittnotify.a $2/$$(build_libdir)
 	cp -a $1/bin/libjitprofiling.a $2/$$(build_libdir)
-	cp -a $1/bin/libadvisor.a $2/$$(build_libdir)
-	cp -a $(SRCCACHE)/$(ITTAPI_SRC_DIR)/include/{ittnotify.h,ittnotify-zca.h,jitprofiling.h} $2/$$(build_includedir)/ittapi/
+	# cp -a $1/bin/libadvisor.a $2/$$(build_libdir)
+	cp -a $(SRCCACHE)/$(ITTAPI_SRC_DIR)/include/ittnotify.h $2/$$(build_includedir)/ittapi/
+	cp -a $(SRCCACHE)/$(ITTAPI_SRC_DIR)/include/ittnotify-zca.h $2/$$(build_includedir)/ittapi/
+	cp -a $(SRCCACHE)/$(ITTAPI_SRC_DIR)/include/jitprofiling.h $2/$$(build_includedir)/ittapi/ $2/$$(build_includedir)/ittapi/
 endef
 
 $(eval $(call staged-install, \
