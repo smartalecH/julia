@@ -486,7 +486,7 @@ static void reportWriterError(const ErrorInfoBase &E)
     jl_safe_printf("ERROR: failed to emit output file %s\n", err.c_str());
 }
 
-#if JL_LLVM_VERSION <=14000
+#if JULIA_FLOAT16_ABI == 1
 static void injectCRTAlias(Module &M, StringRef name, StringRef alias, FunctionType *FT)
 {
     Function *target = M.getFunction(alias);
@@ -1001,7 +1001,7 @@ static void add_output_impl(Module &M, TargetMachine &SourceTM, std::string *out
     // no need to inject aliases if we have no functions
 
     if (inject_aliases) {
-#if JL_LLVM_VERSION<=14000
+#if JULIA_FLOAT16_ABI == 1
         // We would like to emit an alias or an weakref alias to redirect these symbols
         // but LLVM doesn't let us emit a GlobalAlias to a declaration...
         // So for now we inject a definition of these functions that calls our runtime
