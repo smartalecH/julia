@@ -2,6 +2,7 @@
 
 #include <llvm/Config/llvm-config.h>
 #include "julia_assert.h"
+#include "platform.h"
 
 // The LLVM version used, JL_LLVM_VERSION, is represented as a 5-digit integer
 // of the form ABBCC, where A is the major version, B is minor, and C is patch.
