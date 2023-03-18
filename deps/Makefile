@@ -156,6 +156,12 @@ DEP_LIBS += p7zip
 endif
 
 ifeq ($(USE_INTEL_JITEVENTS), 1)
+ifeq ($(USE_BINARYBUILDER_LLVM), 0)
+DEP_LIBS += ittapi
+endif
+endif
+
+ifeq ($(WITH_ITTAPI),1)
 DEP_LIBS += ittapi
 endif
 
