@@ -47,7 +47,7 @@
 
 using namespace llvm;
 
-extern Optional<bool> always_have_fma(Function&);
+extern Optional<bool> always_have_fma(Function&, const Triple &TT);
 
 void replaceUsesWithLoad(Function &F, function_ref<GlobalVariable *(Instruction &I)> should_replace, MDNode *tbaa_const);
 
@@ -79,7 +79,7 @@ static bool is_vector(FunctionType *ty)
     return false;
 }
 
-static uint32_t collect_func_info(Function &F, bool &has_veccall)
+static uint32_t collect_func_info(Function &F, const Triple &TT, bool &has_veccall)
 {
     DominatorTree DT(F);
     LoopInfo LI(DT);
@@ -106,7 +106,7 @@ static uint32_t collect_func_info(Function &F, bool &has_veccall)
                         if (name.startswith("julia.cpu.have_fma.")) {
                             // for some platforms we know they always do (or don't) support
                             // FMA. in those cases we don't need to clone the function.
-                            if (!always_have_fma(*callee).hasValue())
+                            if (!always_have_fma(*callee, TT).hasValue())
                                 flag |= JL_TARGET_CLONE_CPU;
                         } else {
                             flag |= JL_TARGET_CLONE_CPU;
@@ -202,6 +202,7 @@ static void set_target_specs(Module &M, ArrayRef<TargetSpec> specs) {
 }
 
 static void annotate_module_clones(Module &M) {
+    auto TT = Triple(M.getTargetTriple());
     CallGraph CG(M);
     std::vector<Function *> orig_funcs;
     for (auto &F: M) {
@@ -226,7 +227,7 @@ static void annotate_module_clones(Module &M) {
 
     std::vector<unsigned> func_infos(orig_funcs.size());
     for (unsigned i = 0; i < orig_funcs.size(); i++) {
-        func_infos[i] = collect_func_info(*orig_funcs[i], has_veccall);
+        func_infos[i] = collect_func_info(*orig_funcs[i], TT, has_veccall);
     }
     for (unsigned i = 1; i < specs.size(); i++) {
         if (specs[i].flags & JL_TARGET_CLONE_ALL) {
@@ -385,6 +386,7 @@ private:
     std::vector<Function*> fvars;
     std::vector<Constant*> gvars;
     Module &M;
+    Triple TT;
 
     // Map from original function to one based index in `fvars`
     std::map<const Function*,uint32_t> func_ids{};
@@ -440,6 +442,7 @@ CloneCtx::CloneCtx(Module &M, bool allow_bad_fvars)
       fvars(consume_gv<Function>(M, "jl_fvars", allow_bad_fvars)),
       gvars(consume_gv<Constant>(M, "jl_gvars", false)),
       M(M),
+      TT(M.getTargetTriple()),
       allow_bad_fvars(allow_bad_fvars)
 {
     groups.emplace_back(0);
@@ -687,14 +690,12 @@ void CloneCtx::rewrite_alias(GlobalAlias *alias, Function *F)
     for (auto &arg : trampoline->args())
         Args.push_back(&arg);
     auto call = irbuilder.CreateCall(F->getFunctionType(), ptr, makeArrayRef(Args));
-    if (F->isVarArg())
-#if (defined(_CPU_ARM_) || defined(_CPU_PPC_) || defined(_CPU_PPC64_))
-        abort();    // musttail support is very bad on ARM, PPC, PPC64 (as of LLVM 3.9)
-#else
+    if (F->isVarArg()) {
+        assert(!TT.isARM() && !TT.isPPC() && "musttail not supported on ARM/PPC!");
         call->setTailCallKind(CallInst::TCK_MustTail);
-#endif
-    else
+    } else {
         call->setTailCallKind(CallInst::TCK_Tail);
+    }
 
     if (F->getReturnType() == Type::getVoidTy(F->getContext()))
         irbuilder.CreateRetVoid();
