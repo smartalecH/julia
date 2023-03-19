@@ -9,6 +9,7 @@
 #include <llvm-c/Types.h>
 
 #include <llvm/Pass.h>
+#include <llvm/ADT/Triple.h>
 #include <llvm/IR/Module.h>
 #include <llvm/IR/LegacyPassManager.h>
 #include <llvm/IR/Function.h>
