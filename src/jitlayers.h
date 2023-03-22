@@ -91,6 +91,10 @@ struct OptimizationOptions {
     }
 };
 
+#if defined(_COMPILER_ASAN_ENABLED_) || defined(_COMPILER_TSAN_ENABLED_) || defined(_COMPILER_MSAN_ENABLED_)
+#define JL_USE_NEW_PM
+#endif
+
 struct NewPM {
     std::unique_ptr<TargetMachine> TM;
     StandardInstrumentations SI;
