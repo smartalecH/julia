@@ -3000,9 +3000,9 @@ static jl_value_t *intersect_tuple(jl_datatype_t *xd, jl_datatype_t *yd, jl_sten
         if (xi == NULL || yi == NULL) {
             res = jl_bottom_type;
             if (vx && intersect_vararg_length(xi, ly+1-lx, e, 0))
-                res = (jl_value_t*)jl_apply_tuple_type_v(jl_svec_data(params), j);
+                res = jl_apply_tuple_type_v(jl_svec_data(params), j);
             if (vy && intersect_vararg_length(yi, lx+1-ly, e, 1))
-                res = (jl_value_t*)jl_apply_tuple_type_v(jl_svec_data(params), i);
+                res = jl_apply_tuple_type_v(jl_svec_data(params), i);
             break;
         }
         jl_value_t *ii = NULL;
@@ -3036,7 +3036,7 @@ static jl_value_t *intersect_tuple(jl_datatype_t *xd, jl_datatype_t *yd, jl_sten
                 else {
                     if (xb) set_var_to_const(xb, jl_box_long(len-lx+1), yb);
                     if (yb) set_var_to_const(yb, jl_box_long(len-ly+1), xb);
-                    res = (jl_value_t*)jl_apply_tuple_type_v(jl_svec_data(params), len);
+                    res = jl_apply_tuple_type_v(jl_svec_data(params), len);
                 }
             }
             else {
@@ -3052,7 +3052,7 @@ static jl_value_t *intersect_tuple(jl_datatype_t *xd, jl_datatype_t *yd, jl_sten
     }
     // TODO: handle Vararg with explicit integer length parameter
     if (res == NULL)
-        res = (jl_value_t*)jl_apply_tuple_type(params);
+        res = jl_apply_tuple_type(params);
     JL_GC_POP();
     return res;
 }
@@ -3682,7 +3682,7 @@ static jl_value_t *switch_union_tuple(jl_value_t *a, jl_value_t *b)
         ts[1] = jl_tparam(b, i);
         jl_svecset(vec, i, jl_type_union(ts, 2));
     }
-    jl_value_t *ans = (jl_value_t*)jl_apply_tuple_type(vec);
+    jl_value_t *ans = jl_apply_tuple_type(vec);
     JL_GC_POP();
     return ans;
 }

@@ -448,7 +448,13 @@ function get_type_call(expr::Expr, fn::Module)
     args = Any[]
     for i in 2:length(expr.args) # Find the type of the function arguments
         typ, found = get_type(expr.args[i], fn)
-        found ? push!(args, typ) : push!(args, Any)
+        if typ === Union{} || !found
+            # if we didn't find a specific type, or proved it could not exist,
+            # try putting Any here and let the compiler attempt to infer something
+            # with the other types
+            typ = Any
+        end
+        push!(args, typ)
     end
     world = Base.get_world_counter()
     return_type = Core.Compiler.return_type(Tuple{f, args...}, world)
