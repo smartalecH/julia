@@ -1,7 +1,6 @@
 ## jll artifact
 LLVM_JLL_NAME := libLLVM
-LLVM_ASSERT_JLL_VER := 15.0.7+2
-
+LLVM_ASSERT_JLL_VER := 15.0.7+3
 ## source build
 LLVM_VER := 15.0.7
 LLVM_BRANCH=julia-15.0.7-0
