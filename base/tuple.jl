@@ -29,7 +29,7 @@ lastindex(@nospecialize t::Tuple) = length(t)
 size(@nospecialize(t::Tuple), d::Integer) = (d == 1) ? length(t) : throw(ArgumentError("invalid tuple dimension $d"))
 axes(@nospecialize t::Tuple) = (OneTo(length(t)),)
 @eval getindex(@nospecialize(t::Tuple), i::Int) = getfield(t, i, $(Expr(:boundscheck)))
-@eval getindex(@nospecialize(t::Tuple), i::Integer) = getfield(t, convert(Int, i), $(Expr(:boundscheck)))
+@eval getindex(@nospecialize(t::Tuple), i::Integer) = getfield(t, i isa Int ? i : convert(Int, i), $(Expr(:boundscheck)))
 getindex(t::Tuple, r::AbstractArray{<:Any,1}) = (eltype(t)[t[ri] for ri in r]...,)
 getindex(t::Tuple, b::AbstractArray{Bool,1}) = length(b) == length(t) ? getindex(t, findall(b)) : throw(BoundsError(t, b))
 getindex(t::Tuple, c::Colon) = t
@@ -375,7 +375,7 @@ function tuple_type_tail(T::Type)
     end
 end
 
-(::Type{T})(x::Tuple) where {T<:Tuple} = convert(T, x)  # still use `convert` for tuples
+(::Type{T})(x::Tuple) where {T<:Tuple} = x isa T ? x : convert(T, x)  # still use `convert` for tuples
 
 Tuple(x::Ref) = tuple(getindex(x))  # faster than iterator for one element
 Tuple(x::Array{T,0}) where {T} = tuple(getindex(x))
@@ -393,7 +393,9 @@ function _totuple(::Type{T}, itr, s::Vararg{Any,N}) where {T,N}
     @inline
     y = iterate(itr, s...)
     y === nothing && _totuple_err(T)
-    t1 = convert(fieldtype(T, 1), y[1])
+    T1 = fieldtype(T, 1)
+    y1 = y[1]
+    t1 = y1 isa T1 ? y1 : convert(T1, y1)::T1
     # inference may give up in recursive calls, so annotate here to force accurate return type to be propagated
     rT = tuple_type_tail(T)
     ts = _totuple(rT, itr, y[2])::rT
