@@ -1165,7 +1165,8 @@ end
 
 function count_specializations(method::Method)
     specs = method.specializations
-    n = count(i -> isassigned(specs, i), 1:length(specs))
+    specs isa Core.MethodInstance && return 1
+    n = count(!isnothing, specs::Core.SimpleVector)
     return n
 end
 
@@ -1180,7 +1181,7 @@ copy_dims_pair(out) = ()
 copy_dims_pair(out, dim::Int, tail...) =  copy_dims_pair(out => dim, tail...)
 copy_dims_pair(out, dim::Colon, tail...) = copy_dims_pair(out => dim, tail...)
 @test Base.return_types(copy_dims_pair, (Tuple{}, Vararg{Union{Int,Colon}})) == Any[Tuple{}, Tuple{}, Tuple{}]
-@test all(m -> 5 < count_specializations(m) < 15, methods(copy_dims_pair)) # currently about 7
+@test all(m -> 3 < count_specializations(m) < 15, methods(copy_dims_pair)) # currently about 5
 
 # splatting an ::Any should still allow inference to use types of parameters preceding it
 f22364(::Int, ::Any...) = 0
@@ -2647,10 +2648,14 @@ end |> only === Int
 # https://github.com/JuliaLang/julia/issues/47089
 import Core: Const
 import Core.Compiler: apply_type_tfunc
-struct Issue47089{A,B} end
+struct Issue47089{A<:Number,B<:Number} end
 let 𝕃 = Core.Compiler.fallback_lattice
     A = Type{<:Integer}
     @test apply_type_tfunc(𝕃, Const(Issue47089), A, A) <: (Type{Issue47089{A,B}} where {A<:Integer, B<:Integer})
+    @test apply_type_tfunc(𝕃, Const(Issue47089), Const(Int), Const(Int), Const(Int)) === Union{}
+    @test apply_type_tfunc(𝕃, Const(Issue47089), Const(String)) === Union{}
+    @test apply_type_tfunc(𝕃, Const(Issue47089), Const(AbstractString)) === Union{}
+    @test apply_type_tfunc(𝕃, Const(Issue47089), Type{Ptr}, Type{Ptr{T}} where T) === Base.rewrap_unionall(Type{Issue47089.body.body}, Issue47089)
 end
 @test only(Base.return_types(keys, (Dict{String},))) == Base.KeySet{String, T} where T<:(Dict{String})
 @test only(Base.return_types((r)->similar(Array{typeof(r[])}, 1), (Base.RefValue{Array{Int}},))) == Vector{<:Array{Int}}
@@ -2944,11 +2949,11 @@ end
 # issue #28356
 # unit test to make sure countunionsplit overflows gracefully
 # we don't care what number is returned as long as it's large
-@test Core.Compiler.unionsplitcost(Any[Union{Int32, Int64} for i=1:80]) > 100000
-@test Core.Compiler.unionsplitcost(Any[Union{Int8, Int16, Int32, Int64}]) == 2
-@test Core.Compiler.unionsplitcost(Any[Union{Int8, Int16, Int32, Int64}, Union{Int8, Int16, Int32, Int64}, Int8]) == 8
-@test Core.Compiler.unionsplitcost(Any[Union{Int8, Int16, Int32, Int64}, Union{Int8, Int16, Int32}, Int8]) == 6
-@test Core.Compiler.unionsplitcost(Any[Union{Int8, Int16, Int32}, Union{Int8, Int16, Int32, Int64}, Int8]) == 6
+@test Core.Compiler.unionsplitcost(Core.Compiler.JLTypeLattice(), Any[Union{Int32, Int64} for i=1:80]) > 100000
+@test Core.Compiler.unionsplitcost(Core.Compiler.JLTypeLattice(), Any[Union{Int8, Int16, Int32, Int64}]) == 2
+@test Core.Compiler.unionsplitcost(Core.Compiler.JLTypeLattice(), Any[Union{Int8, Int16, Int32, Int64}, Union{Int8, Int16, Int32, Int64}, Int8]) == 8
+@test Core.Compiler.unionsplitcost(Core.Compiler.JLTypeLattice(), Any[Union{Int8, Int16, Int32, Int64}, Union{Int8, Int16, Int32}, Int8]) == 6
+@test Core.Compiler.unionsplitcost(Core.Compiler.JLTypeLattice(), Any[Union{Int8, Int16, Int32}, Union{Int8, Int16, Int32, Int64}, Int8]) == 6
 
 # make sure compiler doesn't hang in union splitting
 
@@ -3949,13 +3954,13 @@ end
 
     # argtypes
     let
-        tunion = Core.Compiler.switchtupleunion(Any[Union{Int32,Int64}, Core.Const(nothing)])
+        tunion = Core.Compiler.switchtupleunion(Core.Compiler.ConstsLattice(), Any[Union{Int32,Int64}, Core.Const(nothing)])
         @test length(tunion) == 2
         @test Any[Int32, Core.Const(nothing)] in tunion
         @test Any[Int64, Core.Const(nothing)] in tunion
     end
     let
-        tunion = Core.Compiler.switchtupleunion(Any[Union{Int32,Int64}, Union{Float32,Float64}, Core.Const(nothing)])
+        tunion = Core.Compiler.switchtupleunion(Core.Compiler.ConstsLattice(), Any[Union{Int32,Int64}, Union{Float32,Float64}, Core.Const(nothing)])
         @test length(tunion) == 4
         @test Any[Int32, Float32, Core.Const(nothing)] in tunion
         @test Any[Int32, Float64, Core.Const(nothing)] in tunion
@@ -4678,6 +4683,26 @@ unknown_sparam_nothrow2(x::Ref{Ref{T}}) where T = @isdefined(T) ? T::Type : noth
 @test only(Base.return_types(unknown_sparam_throw, (Any,))) === Union{Nothing,Type}
 @test only(Base.return_types(unknown_sparam_nothrow1, (Ref,))) === Type
 @test only(Base.return_types(unknown_sparam_nothrow2, (Ref{Ref{T}} where T,))) === Type
+
+struct Issue49027{Ty<:Number}
+    x::Ty
+end
+function issue49027(::Type{<:Issue49027{Ty}}) where Ty
+    if @isdefined Ty # should be false when `Ty` is given as a free type var.
+        return Ty::DataType
+    end
+    return nothing
+end
+@test only(Base.return_types(issue49027, (Type{Issue49027{TypeVar(:Ty)}},))) >: Nothing
+@test isnothing(issue49027(Issue49027{TypeVar(:Ty)}))
+function issue49027_integer(::Type{<:Issue49027{Ty}}) where Ty<:Integer
+    if @isdefined Ty # should be false when `Ty` is given as a free type var.
+        return Ty::DataType
+    end
+    nothing
+end
+@test only(Base.return_types(issue49027_integer, (Type{Issue49027{TypeVar(:Ty,Int)}},))) >: Nothing
+@test isnothing(issue49027_integer(Issue49027{TypeVar(:Ty,Int)}))
 
 function fapplicable end
 gapplicable() = Val(applicable(fapplicable))
