@@ -4762,3 +4762,13 @@ fhasmethod(::Integer, ::Int32) = 3
 @test only(Base.return_types(()) do; Val(hasmethod(tuple, Tuple{Vararg{Int}})); end) === Val{true}
 @test only(Base.return_types(()) do; Val(hasmethod(sin, Tuple{Int, Vararg{Int}})); end) == Val{false}
 @test only(Base.return_types(()) do; Val(hasmethod(sin, Tuple{Int, Int, Vararg{Int}})); end) === Val{false}
+
+# test Conditional Union splitting of info derived from fieldtype (e.g. in abstract setproperty! handling)
+@test only(Base.return_types((Int, Pair{Int,Nothing}, Symbol)) do a, x, s
+    T = fieldtype(typeof(x), s)
+    if a isa T
+        throw(a)
+    else
+        return T
+    end
+end) == Type{Nothing}
