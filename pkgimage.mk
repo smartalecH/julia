@@ -93,7 +93,7 @@ $(eval $(call sysimg_builder,Distributed,Random Serialization Sockets))
 $(eval $(call sysimg_builder,Future,Random))
 $(eval $(call sysimg_builder,InteractiveUtils,Markdown))
 $(eval $(call sysimg_builder,LibGit2,NetworkOptions Printf SHA Base64))
-$(eval $(call sysimg_builder,Profile,Printf))
+$(eval $(call pkgimg_builder,Profile,Printf))
 $(eval $(call sysimg_builder,UUIDs,Random SHA))
 
 
