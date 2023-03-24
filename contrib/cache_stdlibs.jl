@@ -26,6 +26,9 @@ stdlibs = [
     # 4-depth packages
     :SparseArrays,
 
+    # 6-depth packages
+    :Pkg,
+
     # 7-depth packages
     :LLD_jll,
     :SuiteSparse,
