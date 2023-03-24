@@ -66,7 +66,6 @@ let
         :REPL,
         :SharedArrays,
         :TOML,
-        :Test,
 
         # 4-depth packages
         :LibCURL,
