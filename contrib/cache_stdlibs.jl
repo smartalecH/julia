@@ -29,6 +29,7 @@ stdlibs = [
     # 7-depth packages
     :LLD_jll,
     :SuiteSparse,
+    :LazyArtifacts,
 
     # 9-depth packages
     :Statistics,
