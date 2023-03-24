@@ -31,26 +31,6 @@ macro profile(ex)
     end
 end
 
-# triggers printing the report and (optionally) saving a heap snapshot after a SIGINFO/SIGUSR1 profile request
-const PROFILE_PRINT_COND = Ref{Base.AsyncCondition}()
-function profile_printing_listener()
-    try
-        while true
-            wait(PROFILE_PRINT_COND[])
-            peek_report[]()
-            if Base.get_bool_env("JULIA_PROFILE_PEEK_HEAP_SNAPSHOT", false) === true
-                println(stderr, "Saving heap snapshot...")
-                fname = take_heap_snapshot()
-                println(stderr, "Heap snapshot saved to `$(fname)`")
-            end
-        end
-    catch ex
-        if !isa(ex, InterruptException)
-            @error "Profile printing listener crashed" exception=ex,catch_backtrace()
-        end
-    end
-end
-
 # An internal function called to show the report after an information request (SIGINFO or SIGUSR1).
 function _peek_report()
     iob = IOBuffer()
@@ -142,20 +122,6 @@ function check_init()
     buffer_size = @ccall jl_profile_maxlen_data()::Int
     if buffer_size == 0
         default_init()
-    end
-end
-
-function __init__()
-    # Note: The profile buffer is no longer initialized during __init__ because Profile is in the sysimage,
-    # thus __init__ is called every startup. The buffer is lazily initialized the first time `@profile` is
-    # used, if not manually initialized before that.
-    @static if !Sys.iswindows()
-        # triggering a profile via signals is not implemented on windows
-        cond = Base.AsyncCondition()
-        Base.uv_unref(cond.handle)
-        PROFILE_PRINT_COND[] = cond
-        ccall(:jl_set_peek_cond, Cvoid, (Ptr{Cvoid},), PROFILE_PRINT_COND[].handle)
-        errormonitor(Threads.@spawn(profile_printing_listener()))
     end
 end
 
