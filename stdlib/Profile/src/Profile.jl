@@ -74,12 +74,7 @@ Set the duration in seconds of the profile "peek" that is triggered via `SIGINFO
 """
 set_peek_duration(t::Float64) = ccall(:jl_set_profile_peek_duration, Cvoid, (Float64,), t)
 
-precompile_script = """
-import Profile
-Profile.@profile while Profile.len_data() < 1000; rand(10,10) * rand(10,10); end
-Profile.peek_report[]()
-Profile.clear()
-"""
+
 
 ####
 #### User-level functions
@@ -1267,5 +1262,6 @@ end
 
 
 include("Allocs.jl")
+include("precompile.jl")
 
 end # module
