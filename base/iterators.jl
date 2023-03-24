@@ -12,7 +12,7 @@ using .Base:
     @inline, Pair, Pairs, AbstractDict, IndexLinear, IndexStyle, AbstractVector, Vector,
     SizeUnknown, HasLength, HasShape, IsInfinite, EltypeUnknown, HasEltype, OneTo,
     @propagate_inbounds, @isdefined, @boundscheck, @inbounds, Generator,
-    AbstractRange, AbstractUnitRange, UnitRange, LinearIndices,
+    AbstractRange, AbstractUnitRange, UnitRange, LinearIndices, TupleOrBottom,
     (:), |, +, -, *, !==, !, ==, !=, <=, <, >, >=, missing,
     any, _counttuple, eachindex, ntuple, zero, prod, reduce, in, firstindex, lastindex,
     tail, fieldtypes, min, max, minimum, zero, oneunit, promote, promote_shape
@@ -40,12 +40,6 @@ export enumerate, zip, rest, countfrom, take, drop, takewhile, dropwhile, cycle,
 if Base !== Core.Compiler
 export partition
 end
-
-function TupleOrBottom(tt...)
-    any(p -> p === Union{}, tt) && return Union{}
-    return Tuple{tt...}
-end
-
 
 """
     Iterators.map(f, iterators...)
