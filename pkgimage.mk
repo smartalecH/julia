@@ -65,7 +65,7 @@ $(eval $(call sysimg_builder,SHA,))
 $(eval $(call sysimg_builder,Serialization,))
 $(eval $(call sysimg_builder,Sockets,))
 $(eval $(call sysimg_builder,Unicode,))
-$(eval $(call pkgimg_builder,Profile))
+$(eval $(call pkgimg_builder,Profile,))
 
 # 1-depth packages
 $(eval $(call pkgimg_builder,GMP_jll,Artifacts Libdl))
