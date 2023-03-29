@@ -283,8 +283,8 @@ close(proc.in)
     script = "profile_spawnmany_exec.jl"
     cmd_base = `$(Base.julia_cmd()) --depwarn=error --rr-detach --startup-file=no $script`
     @testset for n in [20000, 200000, 2000000]
-        cmd = ignorestatus(setenv(cmd_base, "NTASKS" => n; dir = @__DIR__))
-        cmd = addenv(pipeline(cmd; stdout = stderr, stderr), "JULIA_DEBUG" => "loading")
+        cmd = ignorestatus(setenv(cmd_base, "NTASKS" => n, "JULIA_DEBUG" => "loading"; dir = @__DIR__))
+        cmd = pipeline(cmd; stdout = stderr, stderr)
         proc = run(cmd; wait = false)
         done = Threads.Atomic{Bool}(false)
         timeout = false
